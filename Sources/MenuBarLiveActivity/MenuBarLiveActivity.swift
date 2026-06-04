@@ -9,10 +9,11 @@ import AppKit
 ///
 /// Configure the activity with an icon and an optional menu, then drive its
 /// state through ``setVisible(_:)``, ``setProgress(_:)``, ``setName(_:)``,
-/// ``setIndeterminate(_:)`` and ``setTintColor(_:)``. When the pill is shown
-/// it replaces the status item's icon with an animated crossfade and grows
-/// to the width required by the current name. When it's hidden it shrinks
-/// back to the icon and fades out.
+/// ``setIndeterminate(_:)`` and ``setTintColor(_:)``. While visible the
+/// pill replaces the status item's icon and is sized to fit the current
+/// name; updates to the name animate the pill's width in place. Showing
+/// and hiding use an Apple-style scale + opacity transition that mimics
+/// the system Live Activity reveal.
 ///
 /// All public API is main-actor isolated and must be called on the main thread.
 @MainActor
@@ -37,7 +38,8 @@ public final class MenuBarLiveActivity {
         public let widthAnimationDuration: TimeInterval
         /// Duration of the colour-crossfade triggered by ``setTintColor(_:)``.
         public let tintAnimationDuration: TimeInterval
-        /// Duration of the show / hide crossfade between icon and pill.
+        /// Duration of the scale + opacity transition used when the pill is
+        /// shown or hidden.
         public let showHideAnimationDuration: TimeInterval
         /// Time it takes the indeterminate spinner to complete one full revolution.
         public let indeterminateRotationDuration: TimeInterval
@@ -102,7 +104,20 @@ public final class MenuBarLiveActivity {
 
     private var savedImage: NSImage?
     private var savedTitle: String = ""
-    private var savedLength: CGFloat = NSStatusItem.squareLength
+    // Original `statusItem.length` value (typically a sentinel like
+    // `variableLength`) so we can hand the click-target's width back to the
+    // system as soon as the pill is gone.
+    private var savedLength: CGFloat = NSStatusItem.variableLength
+    // The button's default bezel paints a rectangular highlight in the
+    // wider click target while the pill is still partially transparent.
+    // We disable it during pill display and restore the original value on
+    // hide so we don't change behaviour for callers that customise it.
+    private var savedIsBordered: Bool = true
+    // `isTransparent` stops the button from drawing anything at all (cell
+    // background, focus ring, hover state) while still forwarding mouse
+    // events to the menu. We toggle it on for the pill display and back to
+    // the original value on hide.
+    private var savedIsTransparent: Bool = false
 
     /// Creates a live activity that drives an existing `NSStatusItem`.
     ///
@@ -268,16 +283,9 @@ public final class MenuBarLiveActivity {
         guard pillContainer == nil, let button = statusItem.button else { return }
         savedImage = button.image
         savedTitle = button.title
-        // statusItem.length can be NSStatusItem.squareLength (-1) or
-        // variableLength (-2). Fall back to the button's actual frame width
-        // so we never feed a negative constant into Auto Layout.
-        let rawLength = statusItem.length
-        if rawLength > 0 {
-            savedLength = rawLength
-        } else {
-            let buttonWidth = button.frame.width
-            savedLength = buttonWidth > 0 ? buttonWidth : NSStatusBar.system.thickness
-        }
+        savedLength = statusItem.length
+        savedIsBordered = button.isBordered
+        savedIsTransparent = button.isTransparent
     }
 
     private func restoreIcon() {
@@ -290,6 +298,8 @@ public final class MenuBarLiveActivity {
         button.subviews.forEach { $0.removeFromSuperview() }
         button.image = savedImage
         button.title = savedTitle
+        button.isBordered = savedIsBordered
+        button.isTransparent = savedIsTransparent
         statusItem.length = savedLength
 
         pillContainer = nil
@@ -306,11 +316,11 @@ public final class MenuBarLiveActivity {
         hideTask?.cancel()
         hideTask = nil
 
-        // Caught mid-hide: just animate the existing container back to fully
-        // visible instead of tearing everything down.
-        if let existing = pillContainer {
-            animatePillWidth(to: computedPillWidth(), duration: style.showHideAnimationDuration)
-            animateAlpha(of: existing, to: 1)
+        // Caught mid-hide: the container is still attached but fading out.
+        // Just reverse the transition back to fully visible instead of
+        // rebuilding.
+        if pillContainer != nil {
+            transitionPill(visible: true)
             return
         }
 
@@ -324,9 +334,6 @@ public final class MenuBarLiveActivity {
         label.sizeToFit()
 
         let pillWidth = leftPadding + indicatorDiameter + spacing + label.frame.width + rightPadding
-
-        // Start at the icon's width and grow into the full pill while fading in.
-        statusItem.length = savedLength
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: pillWidth, height: pillHeight))
         container.wantsLayer = true
@@ -395,8 +402,11 @@ public final class MenuBarLiveActivity {
 
         button.title = ""
         button.image = nil
+        button.isBordered = false
+        button.isTransparent = true
         button.subviews.forEach { $0.removeFromSuperview() }
-        attachCentered(container, to: button, width: savedLength, height: pillHeight)
+        statusItem.length = pillWidth
+        attachCentered(container, to: button, width: pillWidth, height: pillHeight)
 
         pillContainer = container
         progressLayer = progress
@@ -407,61 +417,97 @@ public final class MenuBarLiveActivity {
             startSpin(on: progress)
         }
 
-        animatePillWidth(to: pillWidth, duration: style.showHideAnimationDuration)
-        animateAlpha(of: container, to: 1)
+        // The click target snaps to its full width and the visible pill
+        // pops in with a scale + opacity transition around its centre.
+        container.alphaValue = 0
+        container.layer?.transform = Self.centeredScale(Self.pillStartScale, in: container.bounds)
+        transitionPill(visible: true)
     }
 
     private func hidePillView() {
         widthDisplayLink?.invalidate()
         widthDisplayLink = nil
+        hideTask?.cancel()
 
-        guard let container = pillContainer, let button = statusItem.button else {
+        guard pillContainer != nil else {
             restoreIcon()
             return
         }
 
         let duration = style.showHideAnimationDuration
+        transitionPill(visible: false)
 
-        // Put the original icon back on the button while the pill is still on
-        // top so the two crossfade — otherwise the icon only re-appears after
-        // the pill has fully gone and the swap looks abrupt.
-        button.image = savedImage
-        button.title = savedTitle
-
-        animatePillWidth(to: savedLength, duration: duration)
-        animateAlpha(of: container, to: 0)
-
-        hideTask?.cancel()
         hideTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(Int(duration * 1000)))
             guard !Task.isCancelled else { return }
-            self?.removePillAfterHide()
+            self?.restoreIcon()
         }
     }
 
-    private func removePillAfterHide() {
-        hideTask = nil
-        pillContainer?.alphaValue = 0
-        pillContainer?.removeFromSuperview()
-        pillContainer = nil
-        progressLayer = nil
-        trackLayer = nil
-        titleLabel = nil
-        widthConstraint = nil
-        statusItem.length = savedLength
+    // Apple's "settle" easing curve: long, soft tail that mimics a
+    // critically damped spring without overshoot. Used by many system
+    // reveals (popovers, sheet pulls, dynamic island content swaps).
+    private static let revealTimingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+    // Initial / collapsed scale for the show & hide transitions. Subtle
+    // enough to feel like a gentle settle rather than an aggressive pop.
+    private static let pillStartScale: CGFloat = 0.88
+
+    /// Composes a transform that scales a layer around the centre of the
+    /// given bounds, working around AppKit's bottom-left default anchor on
+    /// layer-backed views.
+    private static func centeredScale(_ scale: CGFloat, in bounds: CGRect) -> CATransform3D {
+        let cx = bounds.midX
+        let cy = bounds.midY
+        var t = CATransform3DIdentity
+        t = CATransform3DTranslate(t, cx, cy, 0)
+        t = CATransform3DScale(t, scale, scale, 1)
+        t = CATransform3DTranslate(t, -cx, -cy, 0)
+        return t
+    }
+
+    private func transitionPill(visible: Bool) {
+        guard let container = pillContainer, let layer = container.layer else { return }
+
+        let duration = style.showHideAnimationDuration
+        let targetScale: CGFloat = visible ? 1.0 : Self.pillStartScale
+        let targetOpacity: Float = visible ? 1.0 : 0.0
+        let targetTransform = Self.centeredScale(targetScale, in: layer.bounds)
+
+        // Capture current presentation values so a mid-flight reversal
+        // animates from where we visually are now, not from the model's
+        // (final) value.
+        let presentation = layer.presentation()
+        let fromTransform = presentation?.transform ?? layer.transform
+        let fromOpacity = presentation?.opacity ?? layer.opacity
+
+        layer.removeAnimation(forKey: "pill.transform")
+        layer.removeAnimation(forKey: "pill.opacity")
+
+        layer.transform = targetTransform
+        layer.opacity = targetOpacity
+        container.alphaValue = CGFloat(targetOpacity)
+
+        let scaleAnim = CABasicAnimation(keyPath: "transform")
+        scaleAnim.fromValue = NSValue(caTransform3D: fromTransform)
+        scaleAnim.toValue = NSValue(caTransform3D: targetTransform)
+        scaleAnim.duration = duration
+        scaleAnim.timingFunction = Self.revealTimingFunction
+        scaleAnim.fillMode = .both
+
+        let opacityAnim = CABasicAnimation(keyPath: "opacity")
+        opacityAnim.fromValue = fromOpacity
+        opacityAnim.toValue = targetOpacity
+        opacityAnim.duration = duration
+        opacityAnim.timingFunction = Self.revealTimingFunction
+        opacityAnim.fillMode = .both
+
+        layer.add(scaleAnim, forKey: "pill.transform")
+        layer.add(opacityAnim, forKey: "pill.opacity")
     }
 
     private func computedPillWidth() -> CGFloat {
-        guard let label = titleLabel else { return savedLength }
+        guard let label = titleLabel else { return 0 }
         return leftPadding + indicatorDiameter + spacing + label.frame.width + rightPadding
-    }
-
-    private func animateAlpha(of view: NSView, to alpha: CGFloat) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = style.showHideAnimationDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            view.animator().alphaValue = alpha
-        }
     }
 
     private func attachCentered(_ view: NSView, to button: NSStatusBarButton, width: CGFloat, height: CGFloat) {
