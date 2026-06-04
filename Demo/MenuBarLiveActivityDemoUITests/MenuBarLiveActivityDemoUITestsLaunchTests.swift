@@ -1,13 +1,13 @@
 //
-//  MenuBarLiveActivityRebuildUITestsLaunchTests.swift
-//  MenuBarLiveActivityRebuildUITests
+//  MenuBarLiveActivityDemoUITestsLaunchTests.swift
+//  MenuBarLiveActivityDemoUITests
 //
 //  Created by Marc Büttner on 09.09.25.
 //
 
 import XCTest
 
-final class MenuBarLiveActivityRebuildUITestsLaunchTests: XCTestCase {
+final class MenuBarLiveActivityDemoUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true

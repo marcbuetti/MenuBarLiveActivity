@@ -1,13 +1,13 @@
 //
-//  MenuBarLiveActivityRebuildUITests.swift
-//  MenuBarLiveActivityRebuildUITests
+//  MenuBarLiveActivityDemoUITests.swift
+//  MenuBarLiveActivityDemoUITests
 //
 //  Created by Marc Büttner on 09.09.25.
 //
 
 import XCTest
 
-final class MenuBarLiveActivityRebuildUITests: XCTestCase {
+final class MenuBarLiveActivityDemoUITests: XCTestCase {
 
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.

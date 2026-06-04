@@ -1,14 +1,14 @@
 //
-//  MenuBarLiveActivityRebuildTests.swift
-//  MenuBarLiveActivityRebuildTests
+//  MenuBarLiveActivityDemoTests.swift
+//  MenuBarLiveActivityDemoTests
 //
 //  Created by Marc Büttner on 09.09.25.
 //
 
 import Testing
-@testable import MenuBarLiveActivityRebuild
+@testable import MenuBarLiveActivityDemo
 
-struct MenuBarLiveActivityRebuildTests {
+struct MenuBarLiveActivityDemoTests {
 
     @Test func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.
