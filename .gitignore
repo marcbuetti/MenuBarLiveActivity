@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode – Build-Output im Repo
+Demo/MenuBarLiveActivityDemo/Products/
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
