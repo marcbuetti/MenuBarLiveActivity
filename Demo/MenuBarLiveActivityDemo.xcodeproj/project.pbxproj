@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		242E6EAF2FD0FDDC00F98A81 /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 242E6EAE2FD0FDDC00F98A81 /* MenuBarLiveActivity */; };
 		245434732FD0E1210026B07A /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 245434722FD0E1210026B07A /* MenuBarLiveActivity */; };
 		245434842FD0F5120026B07A /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 245434832FD0F5120026B07A /* MenuBarLiveActivity */; };
 /* End PBXBuildFile section */
@@ -57,6 +58,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				242E6EAF2FD0FDDC00F98A81 /* MenuBarLiveActivity in Frameworks */,
 				245434842FD0F5120026B07A /* MenuBarLiveActivity in Frameworks */,
 				245434732FD0E1210026B07A /* MenuBarLiveActivity in Frameworks */,
 			);
@@ -121,6 +123,7 @@
 			packageProductDependencies = (
 				245434722FD0E1210026B07A /* MenuBarLiveActivity */,
 				245434832FD0F5120026B07A /* MenuBarLiveActivity */,
+				242E6EAE2FD0FDDC00F98A81 /* MenuBarLiveActivity */,
 			);
 			productName = MenuBarLiveActivityRebuild;
 			productReference = 244E74462E70BB9400B78709 /* MenuBarLiveActivityDemo.app */;
@@ -205,7 +208,7 @@
 			mainGroup = 244E743D2E70BB9400B78709;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				245434822FD0F5120026B07A /* XCLocalSwiftPackageReference "../../MenuBarLiveActivity" */,
+				242E6EAD2FD0FDDC00F98A81 /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 244E74472E70BB9400B78709 /* Products */;
@@ -413,7 +416,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 13;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 8S2RY9PW6P;
 				ENABLE_APP_SANDBOX = YES;
@@ -426,7 +429,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mbuettner.MenuBarLiveActivityDemo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -448,7 +451,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 13;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 8S2RY9PW6P;
 				ENABLE_APP_SANDBOX = YES;
@@ -461,7 +464,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mbuettner.MenuBarLiveActivityDemo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -600,14 +603,23 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		245434822FD0F5120026B07A /* XCLocalSwiftPackageReference "../../MenuBarLiveActivity" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../MenuBarLiveActivity;
+/* Begin XCRemoteSwiftPackageReference section */
+		242E6EAD2FD0FDDC00F98A81 /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/marcbuetti/MenuBarLiveActivity.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		242E6EAE2FD0FDDC00F98A81 /* MenuBarLiveActivity */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 242E6EAD2FD0FDDC00F98A81 /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */;
+			productName = MenuBarLiveActivity;
+		};
 		245434722FD0E1210026B07A /* MenuBarLiveActivity */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MenuBarLiveActivity;
