@@ -12,8 +12,8 @@ import AppKit
 /// ``setIndeterminate(_:)`` and ``setTintColor(_:)``. While visible the
 /// pill replaces the status item's icon and is sized to fit the current
 /// name; updates to the name animate the pill's width in place. Showing
-/// and hiding use an Apple-style scale + opacity transition that mimics
-/// the system Live Activity reveal.
+/// and hiding use the same Apple-style scale + opacity transition at
+/// full width — the pill never grows into place.
 ///
 /// All public API is main-actor isolated and must be called on the main thread.
 @MainActor
@@ -81,6 +81,15 @@ public final class MenuBarLiveActivity {
     private var titleLabel: NSTextField?
     private var widthConstraint: NSLayoutConstraint?
     private var hideTask: Task<Void, Never>?
+    private var revealTask: Task<Void, Never>?
+    // Puts the icon back only after the system finished closing the gap.
+    private var iconRestoreTask: Task<Void, Never>?
+    private var iconRestorePending = false
+    // Optional Liquid Glass background (macOS 26+).
+    private var glassView: NSView?
+    private var useGlassBackground = false
+    // Invalidates stale hide-animation completions after a re-show.
+    private var hideGeneration: UInt64 = 0
 
     private let widthLinkProxy = DisplayLinkProxy()
     private var widthDisplayLink: CADisplayLink?
@@ -118,6 +127,9 @@ public final class MenuBarLiveActivity {
     // events to the menu. We toggle it on for the pill display and back to
     // the original value on hide.
     private var savedIsTransparent: Bool = false
+    // Original accessibility label / tooltip, restored on hide.
+    private var savedAccessibilityLabel: String?
+    private var savedToolTip: String?
 
     /// Creates a live activity that drives an existing `NSStatusItem`.
     ///
@@ -182,7 +194,8 @@ public final class MenuBarLiveActivity {
 
     /// Shows or hides the pill.
     ///
-    /// Transitions are animated using ``Style/showHideAnimationDuration``.
+    /// Showing and hiding both animate with the same scale + opacity
+    /// transition (``Style/showHideAnimationDuration``) at full width.
     /// Calling this with the current value is a no-op. Calling it while a
     /// previous transition is still running cancels and reverses smoothly,
     /// so it's safe to bind directly to a SwiftUI `Toggle`.
@@ -208,6 +221,7 @@ public final class MenuBarLiveActivity {
         guard isVisible, !isIndeterminate else { return }
         if progressLayer == nil { showPillView() }
         animateStrokeEnd(to: clamped)
+        updateAccessibility()
     }
 
     /// Updates the title shown next to the progress ring.
@@ -233,6 +247,7 @@ public final class MenuBarLiveActivity {
 
         let newPillWidth = leftPadding + indicatorDiameter + spacing + label.frame.width + rightPadding
         animatePillWidth(to: newPillWidth)
+        updateAccessibility()
     }
 
     /// Changes the pill's tint colour and animates the crossfade.
@@ -242,6 +257,11 @@ public final class MenuBarLiveActivity {
     /// with `NSColor(_:)`.
     public func setTintColor(_ color: NSColor) {
         currentTintColor = color
+        // The glass background carries the tint itself.
+        if let glassView, #available(macOS 26.0, *) {
+            (glassView as? NSGlassEffectView)?.tintColor = color
+            return
+        }
         guard
             isVisible,
             let layer = pillContainer?.layer
@@ -275,17 +295,64 @@ public final class MenuBarLiveActivity {
         } else {
             stopSpin(on: layer)
         }
+        updateAccessibility()
+    }
+
+    /// Switches the pill background between the flat tint fill and a
+    /// Liquid Glass capsule (macOS 26+). Takes effect immediately when the
+    /// pill is visible; on systems without Liquid Glass it falls back to
+    /// the flat fill.
+    public func setGlassBackground(_ enabled: Bool) {
+        useGlassBackground = enabled
+        guard let container = pillContainer else { return }
+        if enabled, #available(macOS 26.0, *) {
+            guard glassView == nil else { return }
+            let glass = NSGlassEffectView(frame: container.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.cornerRadius = pillHeight / 2
+            glass.tintColor = currentTintColor
+            if let first = container.subviews.first {
+                container.addSubview(glass, positioned: .below, relativeTo: first)
+            } else {
+                container.addSubview(glass)
+            }
+            container.layer?.backgroundColor = NSColor.clear.cgColor
+            glassView = glass
+        } else {
+            glassView?.removeFromSuperview()
+            glassView = nil
+            container.layer?.backgroundColor = currentTintColor.cgColor
+        }
     }
 
     // MARK: - Internal
 
+    // Mirrors name and progress into the button's accessibility
+    // attributes and tooltip so the activity stays usable with VoiceOver
+    // while the pill replaces the icon.
+    private func updateAccessibility() {
+        guard let button = statusItem.button, pillContainer != nil else { return }
+        button.setAccessibilityLabel(name)
+        button.toolTip = name
+        if isIndeterminate {
+            button.setAccessibilityValue(nil)
+        } else {
+            button.setAccessibilityValue("\(Int((progressValue * 100).rounded())) %")
+        }
+    }
+
     private func saveOriginalStateIfNeeded() {
-        guard pillContainer == nil, let button = statusItem.button else { return }
+        // While an icon restore is still pending the saved values below
+        // are the authoritative originals — the button itself is empty
+        // right now, so re-saving would capture nothing.
+        guard pillContainer == nil, !iconRestorePending, let button = statusItem.button else { return }
         savedImage = button.image
         savedTitle = button.title
         savedLength = statusItem.length
         savedIsBordered = button.isBordered
         savedIsTransparent = button.isTransparent
+        savedAccessibilityLabel = button.accessibilityLabel()
+        savedToolTip = button.toolTip
     }
 
     private func restoreIcon() {
@@ -293,13 +360,18 @@ public final class MenuBarLiveActivity {
         widthDisplayLink = nil
         hideTask?.cancel()
         hideTask = nil
+        revealTask?.cancel()
+        revealTask = nil
+        iconRestoreTask?.cancel()
+        iconRestoreTask = nil
 
         guard let button = statusItem.button else { return }
         button.subviews.forEach { $0.removeFromSuperview() }
-        button.image = savedImage
-        button.title = savedTitle
         button.isBordered = savedIsBordered
         button.isTransparent = savedIsTransparent
+        button.setAccessibilityLabel(savedAccessibilityLabel)
+        button.setAccessibilityValue(nil)
+        button.toolTip = savedToolTip
         statusItem.length = savedLength
 
         pillContainer = nil
@@ -307,6 +379,35 @@ public final class MenuBarLiveActivity {
         trackLayer = nil
         titleLabel = nil
         widthConstraint = nil
+        glassView = nil
+
+        // Mirror of the show sequence — let the system close the gap
+        // while the slot is empty, then put the icon back once the
+        // button width has settled.
+        iconRestorePending = true
+        iconRestoreTask = Task { @MainActor [weak self] in
+            let start = CACurrentMediaTime()
+            var lastWidth: CGFloat = -1
+            var stableSamples = 0
+            while !Task.isCancelled {
+                let width = self?.statusItem.button?.bounds.width ?? 0
+                if abs(width - lastWidth) < 0.5 {
+                    stableSamples += 1
+                } else {
+                    stableSamples = 0
+                }
+                lastWidth = width
+                let elapsed = CACurrentMediaTime() - start
+                if stableSamples >= Self.settledSampleCount && elapsed >= Self.minRevealDelay { break }
+                if elapsed >= Self.menuBarResizeTimeout { break }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.statusItem.button?.image = self.savedImage
+            self.statusItem.button?.title = self.savedTitle
+            self.iconRestorePending = false
+            self.iconRestoreTask = nil
+        }
     }
 
     private func showPillView() {
@@ -315,10 +416,12 @@ public final class MenuBarLiveActivity {
         widthDisplayLink = nil
         hideTask?.cancel()
         hideTask = nil
+        // A pending icon restore must not fire into the new pill.
+        iconRestoreTask?.cancel()
+        iconRestoreTask = nil
 
         // Caught mid-hide: the container is still attached but fading out.
-        // Just reverse the transition back to fully visible instead of
-        // rebuilding.
+        // Reverse the transition back to fully visible instead of rebuilding.
         if pillContainer != nil {
             transitionPill(visible: true)
             return
@@ -337,10 +440,19 @@ public final class MenuBarLiveActivity {
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: pillWidth, height: pillHeight))
         container.wantsLayer = true
-        container.layer?.backgroundColor = currentTintColor.cgColor
         container.layer?.cornerRadius = pillHeight / 2
         container.layer?.masksToBounds = true
-        container.alphaValue = 0
+        // Liquid Glass background instead of a flat tint fill, if enabled.
+        if useGlassBackground, #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView(frame: container.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.cornerRadius = pillHeight / 2
+            glass.tintColor = currentTintColor
+            container.addSubview(glass)
+            glassView = glass
+        } else {
+            container.layer?.backgroundColor = currentTintColor.cgColor
+        }
 
         let indicatorFrame = NSRect(
             x: leftPadding,
@@ -413,35 +525,70 @@ public final class MenuBarLiveActivity {
         trackLayer = track
         titleLabel = label
 
+        // Expose the activity to VoiceOver while the icon is gone.
+        updateAccessibility()
+
         if isIndeterminate {
             startSpin(on: progress)
         }
 
-        // The click target snaps to its full width and the visible pill
-        // pops in with a scale + opacity transition around its centre.
+        // The menu bar animates the status item's width change itself on
+        // recent macOS versions and would clip the pill while the gap is
+        // still opening. Keep the pill invisible until the gap has fully
+        // opened, then settle it in with the same scale + opacity
+        // transition used on the way out, so showing mirrors hiding.
         container.alphaValue = 0
+        container.layer?.opacity = 0
         container.layer?.transform = Self.centeredScale(Self.pillStartScale, in: container.bounds)
-        transitionPill(visible: true)
+
+        let grace: TimeInterval
+        if #available(macOS 26.0, *) {
+            grace = Self.menuBarResizeGracePeriod
+        } else {
+            grace = 0
+        }
+        revealTask = Task { @MainActor [weak self] in
+            let start = CACurrentMediaTime()
+            while !Task.isCancelled {
+                let elapsed = CACurrentMediaTime() - start
+                let buttonWidth = self?.statusItem.button?.bounds.width ?? 0
+                if elapsed >= grace && buttonWidth >= pillWidth - Self.revealWidthSlack { break }
+                if elapsed >= Self.menuBarResizeTimeout { break }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.revealTask = nil
+            self.transitionPill(visible: true)
+        }
     }
 
     private func hidePillView() {
         widthDisplayLink?.invalidate()
         widthDisplayLink = nil
         hideTask?.cancel()
+        revealTask?.cancel()
+        revealTask = nil
 
         guard pillContainer != nil else {
             restoreIcon()
             return
         }
 
-        let duration = style.showHideAnimationDuration
-        transitionPill(visible: false)
-
-        hideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(Int(duration * 1000)))
-            guard !Task.isCancelled else { return }
-            self?.restoreIcon()
+        // Clean up exactly when the fade-out animation finishes instead
+        // of sleeping for its nominal duration. The generation counter
+        // invalidates the completion if the pill was re-shown (or hidden
+        // again) in the meantime.
+        hideGeneration &+= 1
+        let generation = hideGeneration
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hideGeneration == generation, !self.isVisible else { return }
+                self.restoreIcon()
+            }
         }
+        transitionPill(visible: false)
+        CATransaction.commit()
     }
 
     // Apple's "settle" easing curve: long, soft tail that mimics a
@@ -451,6 +598,24 @@ public final class MenuBarLiveActivity {
     // Initial / collapsed scale for the show & hide transitions. Subtle
     // enough to feel like a gentle settle rather than an aggressive pop.
     private static let pillStartScale: CGFloat = 0.88
+    // The macOS 26+ menu bar animates a status item resize over roughly
+    // 0.4s. The reveal starts earlier than that on purpose: the pill
+    // begins small (``pillStartScale``) and transparent, so the tail end
+    // of the gap animation can safely overlap the start of the fade-in
+    // without visible clipping — this keeps the blank gap short.
+    private static let menuBarResizeGracePeriod: TimeInterval = 0.2
+    // Slack allowed on the reported button width before revealing. The
+    // scaled-down pill is inset from both edges by more than this, so
+    // the gap may still be finishing while the fade-in starts.
+    private static let revealWidthSlack: CGFloat = 20
+    // Upper bound for waiting on the gap to open, in case the button
+    // never reports the requested width.
+    private static let menuBarResizeTimeout: TimeInterval = 0.7
+    // Minimum wait and the number of consecutive stable width samples
+    // used when watching for the gap to finish closing before the icon
+    // is put back after a hide.
+    private static let minRevealDelay: TimeInterval = 0.1
+    private static let settledSampleCount = 2
 
     /// Composes a transform that scales a layer around the centre of the
     /// given bounds, working around AppKit's bottom-left default anchor on
@@ -531,6 +696,16 @@ public final class MenuBarLiveActivity {
         let actualDuration = duration ?? style.widthAnimationDuration
 
         guard actualDuration > 0, abs(newWidth - startWidth) > 0.5 else {
+            statusItem.length = newWidth
+            widthConstraint?.constant = newWidth
+            return
+        }
+
+        // The macOS 26+ menu bar animates length changes itself — driving
+        // it per-frame via the display link below would make the system
+        // chase every intermediate value. Hand it the final width once
+        // and let it run its own animation.
+        if #available(macOS 26.0, *) {
             statusItem.length = newWidth
             widthConstraint?.constant = newWidth
             return

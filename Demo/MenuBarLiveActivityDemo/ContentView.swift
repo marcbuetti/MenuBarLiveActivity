@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var name: String = "Updating Software"
     @State private var isIndeterminate: Bool = false
     @State private var tintColor: Color = Color(nsColor: .systemBlue)
+    @State private var useGlass: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -49,6 +50,11 @@ struct ContentView: View {
             Toggle("Animated (indeterminate)", isOn: $isIndeterminate)
                 .onChange(of: isIndeterminate) { _, value in
                     activity.setIndeterminate(value)
+                }
+
+            Toggle("Liquid Glass Background", isOn: $useGlass)
+                .onChange(of: useGlass) { _, value in
+                    activity.setGlassBackground(value)
                 }
 
             VStack(alignment: .leading, spacing: 8) {
