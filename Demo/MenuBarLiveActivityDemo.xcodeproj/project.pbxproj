@@ -13,6 +13,7 @@
 		2496A5A43027ACDA0039A68C /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 2496A5A33027ACDA0039A68C /* MenuBarLiveActivity */; };
 		2496A5A73027ACF10039A68C /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 2496A5A63027ACF10039A68C /* MenuBarLiveActivity */; };
 		2496A5C63027AD8D0039A68C /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 2496A5C53027AD8D0039A68C /* MenuBarLiveActivity */; };
+		2496A5E53027BF070039A68C /* MenuBarLiveActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 2496A5E43027BF070039A68C /* MenuBarLiveActivity */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 			files = (
 				2496A5C63027AD8D0039A68C /* MenuBarLiveActivity in Frameworks */,
 				24251D452FD197250047A987 /* MenuBarLiveActivity in Frameworks */,
+				2496A5E53027BF070039A68C /* MenuBarLiveActivity in Frameworks */,
 				2496A5A73027ACF10039A68C /* MenuBarLiveActivity in Frameworks */,
 				245434842FD0F5120026B07A /* MenuBarLiveActivity in Frameworks */,
 				2496A5A43027ACDA0039A68C /* MenuBarLiveActivity in Frameworks */,
@@ -133,6 +135,7 @@
 				2496A5A33027ACDA0039A68C /* MenuBarLiveActivity */,
 				2496A5A63027ACF10039A68C /* MenuBarLiveActivity */,
 				2496A5C53027AD8D0039A68C /* MenuBarLiveActivity */,
+				2496A5E43027BF070039A68C /* MenuBarLiveActivity */,
 			);
 			productName = MenuBarLiveActivityRebuild;
 			productReference = 244E74462E70BB9400B78709 /* MenuBarLiveActivityDemo.app */;
@@ -217,7 +220,7 @@
 			mainGroup = 244E743D2E70BB9400B78709;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				2496A5C43027AD8D0039A68C /* XCLocalSwiftPackageReference "../../MenuBarLiveActivity" */,
+				2496A5E33027BF070039A68C /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 244E74472E70BB9400B78709 /* Products */;
@@ -614,12 +617,16 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		2496A5C43027AD8D0039A68C /* XCLocalSwiftPackageReference "../../MenuBarLiveActivity" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../MenuBarLiveActivity;
+/* Begin XCRemoteSwiftPackageReference section */
+		2496A5E33027BF070039A68C /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/marcbuetti/MenuBarLiveActivity";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.0;
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		24251D442FD197250047A987 /* MenuBarLiveActivity */ = {
@@ -644,6 +651,11 @@
 		};
 		2496A5C53027AD8D0039A68C /* MenuBarLiveActivity */ = {
 			isa = XCSwiftPackageProductDependency;
+			productName = MenuBarLiveActivity;
+		};
+		2496A5E43027BF070039A68C /* MenuBarLiveActivity */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2496A5E33027BF070039A68C /* XCRemoteSwiftPackageReference "MenuBarLiveActivity" */;
 			productName = MenuBarLiveActivity;
 		};
 /* End XCSwiftPackageProductDependency section */
