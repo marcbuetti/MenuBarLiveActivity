@@ -4,16 +4,19 @@
 //
 
 import AppKit
+import Symbols
 
 /// A pill-shaped "live activity" view rendered inside an `NSStatusItem`.
 ///
 /// Configure the activity with an icon and an optional menu, then drive its
 /// state through ``setVisible(_:)``, ``setProgress(_:)``, ``setName(_:)``,
-/// ``setIndeterminate(_:)`` and ``setTintColor(_:)``. While visible the
-/// pill replaces the status item's icon and is sized to fit the current
-/// name; updates to the name animate the pill's width in place. Showing
-/// and hiding use the same Apple-style scale + opacity transition at
-/// full width — the pill never grows into place.
+/// ``setIndeterminate(_:)``, ``setTintColor(_:)`` and
+/// ``setSymbol(_:rendering:)``. While visible the pill replaces the status
+/// item's icon and is sized to fit the current name; updates to the name
+/// animate the pill's width in place. Showing and hiding use the same
+/// Apple-style scale + opacity transition at full width — the pill never
+/// grows into place. The progress ring can be swapped for an SF Symbol
+/// (for example a checkmark or a warning sign) with an animated transition.
 ///
 /// All public API is main-actor isolated and must be called on the main thread.
 @MainActor
@@ -46,6 +49,14 @@ public final class MenuBarLiveActivity {
         /// Fraction of the progress arc that is drawn while in indeterminate
         /// mode (`0.0`–`1.0`). The visible segment rotates around the ring.
         public let indeterminateArcLength: CGFloat
+        /// Duration of the transition when the progress ring is swapped for
+        /// a symbol (or back) via ``MenuBarLiveActivity/setSymbol(_:rendering:)``.
+        public let symbolAnimationDuration: TimeInterval
+        /// Point size used to render symbols shown in place of the ring.
+        /// The default yields a 20 pt glyph, matching the ring's diameter.
+        public let symbolPointSize: CGFloat
+        /// Font weight used to render symbols shown in place of the ring.
+        public let symbolWeight: NSFont.Weight
 
         /// Creates a style. Every parameter has a default; override only what
         /// you want to change.
@@ -58,7 +69,10 @@ public final class MenuBarLiveActivity {
             tintAnimationDuration: TimeInterval = 0.3,
             showHideAnimationDuration: TimeInterval = 0.3,
             indeterminateRotationDuration: TimeInterval = 1.0,
-            indeterminateArcLength: CGFloat = 0.25
+            indeterminateArcLength: CGFloat = 0.25,
+            symbolAnimationDuration: TimeInterval = 0.45,
+            symbolPointSize: CGFloat = 16,
+            symbolWeight: NSFont.Weight = .semibold
         ) {
             self.tintColor = tintColor
             self.textColor = textColor
@@ -69,7 +83,27 @@ public final class MenuBarLiveActivity {
             self.showHideAnimationDuration = showHideAnimationDuration
             self.indeterminateRotationDuration = indeterminateRotationDuration
             self.indeterminateArcLength = indeterminateArcLength
+            self.symbolAnimationDuration = symbolAnimationDuration
+            self.symbolPointSize = symbolPointSize
+            self.symbolWeight = symbolWeight
         }
+    }
+
+    /// How a symbol shown via ``setSymbol(_:rendering:)`` is coloured.
+    ///
+    /// Mirrors the SF Symbols rendering modes. Not every symbol supports
+    /// every mode; the system falls back to monochrome when a variant is
+    /// missing.
+    public enum SymbolRendering: Equatable, Sendable {
+        /// Single colour for the whole glyph. `nil` uses ``Style/textColor``.
+        case monochrome(NSColor? = nil)
+        /// One base colour; the system derives lighter shades for the
+        /// secondary and tertiary layers.
+        case hierarchical(NSColor)
+        /// The symbol's built-in colours (e.g. yellow for
+        /// `exclamationmark.triangle.fill`). Symbols without a multicolor
+        /// variant are drawn monochrome in ``Style/textColor`` instead.
+        case multicolor
     }
 
     private let statusItem: NSStatusItem
@@ -78,6 +112,11 @@ public final class MenuBarLiveActivity {
     private var pillContainer: NSView?
     private var progressLayer: CAShapeLayer?
     private var trackLayer: CAShapeLayer?
+    // Parent of the track + progress layers so the whole ring can be
+    // faded and scaled as one unit when swapping to a symbol.
+    private var ringLayer: CALayer?
+    // Image view that shows an SF Symbol in place of the ring.
+    private var symbolView: NSImageView?
     private var titleLabel: NSTextField?
     private var widthConstraint: NSLayoutConstraint?
     private var hideTask: Task<Void, Never>?
@@ -103,6 +142,13 @@ public final class MenuBarLiveActivity {
     private var name: String
     private var isIndeterminate: Bool = false
     private var currentTintColor: NSColor
+    // Symbol currently shown instead of the ring, if any, and how it is
+    // coloured.
+    private var symbolImage: NSImage?
+    // SF Symbol name when the symbol was set by name; used to detect
+    // colour-only changes.
+    private var symbolName: String?
+    private var symbolRendering: SymbolRendering = .monochrome()
 
     private let pillHeight: CGFloat = 24
     private let leftPadding: CGFloat = 6
@@ -298,6 +344,93 @@ public final class MenuBarLiveActivity {
         updateAccessibility()
     }
 
+    /// Shows a symbol image in place of the progress ring, or restores the
+    /// ring when `image` is `nil`.
+    ///
+    /// Use this to signal a state rather than progress — a checkmark when
+    /// an update finished or a warning sign when it failed. Switching from
+    /// the ring to a symbol (and back) crossfades and scales the indicator;
+    /// switching from one symbol to another uses the system's symbol
+    /// replace transition. The symbol is rendered at
+    /// ``Style/symbolPointSize`` and ``Style/symbolWeight``.
+    ///
+    /// The progress value and indeterminate state are kept while a symbol
+    /// is shown, so restoring the ring picks up where it left off. Combine
+    /// this with ``setTintColor(_:)`` to recolour the whole pill as well.
+    ///
+    /// - Parameters:
+    ///   - image: A symbol image, typically created with
+    ///     `NSImage(systemSymbolName:accessibilityDescription:)`. Pass `nil`
+    ///     to show the progress ring again. The image's accessibility
+    ///     description is exposed to VoiceOver while the symbol is visible.
+    ///   - rendering: Colouring of the symbol, see ``SymbolRendering``.
+    ///     Defaults to monochrome in ``Style/textColor``.
+    public func setSymbol(_ image: NSImage?, rendering: SymbolRendering = .monochrome()) {
+        applySymbol(image, name: nil, rendering: rendering)
+    }
+
+    /// Convenience for ``setSymbol(_:rendering:)`` that looks up an SF
+    /// Symbol by name.
+    ///
+    /// - Parameters:
+    ///   - systemName: Name of the SF Symbol, e.g. `"checkmark.circle.fill"`.
+    ///   - accessibilityDescription: Optional description exposed to VoiceOver.
+    ///   - rendering: Colouring of the symbol, see ``SymbolRendering``.
+    public func setSymbol(
+        systemName: String,
+        accessibilityDescription: String? = nil,
+        rendering: SymbolRendering = .monochrome()
+    ) {
+        let image = NSImage(systemSymbolName: systemName, accessibilityDescription: accessibilityDescription)
+        applySymbol(image, name: systemName, rendering: rendering)
+    }
+
+    // Shared implementation of the two `setSymbol` entry points. `name`
+    // identifies SF Symbols looked up by name so a call with the same
+    // symbol but a different rendering is recognised as a colour-only
+    // change (the system's replace transition misbehaves in that case).
+    private func applySymbol(_ image: NSImage?, name: String?, rendering: SymbolRendering) {
+        let previousImage = symbolImage
+        let previousName = symbolName
+        let hadSymbol = previousImage != nil
+        symbolImage = image
+        symbolName = name
+        symbolRendering = rendering
+        guard isVisible, let symbolView, pillContainer != nil else { return }
+
+        guard let image else {
+            if hadSymbol { crossfadeIndicator(toSymbol: false) }
+            updateAccessibility()
+            return
+        }
+
+        let configured = configuredSymbolImage(image, rendering: rendering)
+        symbolView.contentTintColor = tintColor(for: rendering)
+
+        if !hadSymbol {
+            // Ring → symbol.
+            symbolView.image = configured
+            crossfadeIndicator(toSymbol: true)
+        } else if image === previousImage || (name != nil && name == previousName) {
+            // Same glyph, new colouring: plain crossfade of the contents.
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = style.symbolAnimationDuration * 0.6
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            symbolView.layer?.add(fade, forKey: "symbol.recolor")
+            symbolView.image = configured
+        } else {
+            // Symbol → symbol: let the system animate the glyph swap,
+            // slowed slightly to match the ring ↔ symbol crossfade.
+            symbolView.setSymbolImage(
+                configured,
+                contentTransition: .replace.downUp,
+                options: .speed(0.7)
+            )
+        }
+        updateAccessibility()
+    }
+
     /// Switches the pill background between the flat tint fill and a
     /// Liquid Glass capsule (macOS 26+). Takes effect immediately when the
     /// pill is visible; on systems without Liquid Glass it falls back to
@@ -307,10 +440,7 @@ public final class MenuBarLiveActivity {
         guard let container = pillContainer else { return }
         if enabled, #available(macOS 26.0, *) {
             guard glassView == nil else { return }
-            let glass = NSGlassEffectView(frame: container.bounds)
-            glass.autoresizingMask = [.width, .height]
-            glass.cornerRadius = pillHeight / 2
-            glass.tintColor = currentTintColor
+            let glass = makeGlassView(frame: container.bounds)
             if let first = container.subviews.first {
                 container.addSubview(glass, positioned: .below, relativeTo: first)
             } else {
@@ -327,6 +457,22 @@ public final class MenuBarLiveActivity {
 
     // MARK: - Internal
 
+    // Builds the Liquid Glass capsule used as the pill background. On
+    // macOS 27+ the glass is marked interactive so it responds visually
+    // to clicks like other glass-backed controls — the pill opens the
+    // status item's menu, so it is an interactive surface.
+    @available(macOS 26.0, *)
+    private func makeGlassView(frame: NSRect) -> NSGlassEffectView {
+        let glass = NSGlassEffectView(frame: frame)
+        glass.autoresizingMask = [.width, .height]
+        glass.cornerRadius = pillHeight / 2
+        glass.tintColor = currentTintColor
+        if #available(macOS 27.0, *) {
+            glass.effectIsInteractive = true
+        }
+        return glass
+    }
+
     // Mirrors name and progress into the button's accessibility
     // attributes and tooltip so the activity stays usable with VoiceOver
     // while the pill replaces the icon.
@@ -334,11 +480,138 @@ public final class MenuBarLiveActivity {
         guard let button = statusItem.button, pillContainer != nil else { return }
         button.setAccessibilityLabel(name)
         button.toolTip = name
-        if isIndeterminate {
+        if let symbolImage {
+            button.setAccessibilityValue(symbolImage.accessibilityDescription)
+        } else if isIndeterminate {
             button.setAccessibilityValue(nil)
         } else {
             button.setAccessibilityValue("\(Int((progressValue * 100).rounded())) %")
         }
+    }
+
+    // Applies the style's size / weight and the rendering mode to a symbol
+    // image. Monochrome keeps the image a template so it is coloured via
+    // the image view's `contentTintColor` and multi-layer symbols such as
+    // `checkmark.circle.fill` keep their cut-out glyph. The other modes
+    // bake their colours into the image.
+    private func configuredSymbolImage(_ image: NSImage, rendering: SymbolRendering) -> NSImage {
+        var configuration = NSImage.SymbolConfiguration(
+            pointSize: style.symbolPointSize,
+            weight: style.symbolWeight
+        )
+        switch rendering {
+        case .monochrome:
+            break
+        case .hierarchical(let color):
+            configuration = configuration.applying(.init(hierarchicalColor: color))
+        case .multicolor:
+            // Symbols without a multicolor variant come back as a plain
+            // black glyph that ignores the tint, so only use the variant
+            // when it actually carries colour; otherwise stay monochrome.
+            let multicolor = configuration.applying(.preferringMulticolor())
+            if let candidate = image.withSymbolConfiguration(multicolor), Self.rendersWithColor(candidate) {
+                return candidate
+            }
+        }
+        return image.withSymbolConfiguration(configuration) ?? image
+    }
+
+    // Draws the image into a small bitmap and reports whether any visible
+    // pixel has chroma. Used to detect whether a multicolor variant exists.
+    private static func rendersWithColor(_ image: NSImage) -> Bool {
+        let side = 24
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: side,
+            pixelsHigh: side,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return false }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        NSGraphicsContext.restoreGraphicsState()
+
+        for x in 0..<side {
+            for y in 0..<side {
+                guard let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.5 else { continue }
+                let channels = [color.redComponent, color.greenComponent, color.blueComponent]
+                if let hi = channels.max(), let lo = channels.min(), hi - lo > 0.1 {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    // Tint used by the image view. Monochrome is coloured entirely through
+    // it; the other modes carry their colours in the image, but the text
+    // colour stays set as a fallback for symbols that lack the requested
+    // variant and are drawn monochrome by the system.
+    private func tintColor(for rendering: SymbolRendering) -> NSColor {
+        if case .monochrome(let color) = rendering {
+            return color ?? style.textColor
+        }
+        return style.textColor
+    }
+
+    // Crossfades between the ring and the symbol: the outgoing element
+    // shrinks and fades while the incoming one grows into place.
+    private func crossfadeIndicator(toSymbol: Bool) {
+        guard let ringLayer, let symbolLayer = symbolView?.layer else { return }
+        let duration = style.symbolAnimationDuration
+        animateIndicatorLayer(ringLayer, visible: !toSymbol, duration: duration)
+        animateIndicatorLayer(symbolLayer, visible: toSymbol, duration: duration)
+    }
+
+    private func animateIndicatorLayer(_ layer: CALayer, visible: Bool, duration: TimeInterval) {
+        let targetOpacity: Float = visible ? 1 : 0
+        let targetTransform = visible
+            ? CATransform3DIdentity
+            : Self.centeredScale(Self.indicatorSwapScale, in: layer.bounds)
+
+        // Start from the presentation values so a quick back-and-forth
+        // reverses smoothly instead of jumping.
+        let presentation = layer.presentation()
+        let fromOpacity = presentation?.opacity ?? layer.opacity
+        let fromTransform = presentation?.transform ?? layer.transform
+
+        layer.removeAnimation(forKey: "indicator.opacity")
+        layer.removeAnimation(forKey: "indicator.transform")
+        layer.opacity = targetOpacity
+        layer.transform = targetTransform
+
+        guard duration > 0 else { return }
+
+        let opacityAnim = CABasicAnimation(keyPath: "opacity")
+        opacityAnim.fromValue = fromOpacity
+        opacityAnim.toValue = targetOpacity
+        opacityAnim.duration = duration
+        opacityAnim.timingFunction = Self.revealTimingFunction
+
+        let transformAnim = CABasicAnimation(keyPath: "transform")
+        transformAnim.fromValue = NSValue(caTransform3D: fromTransform)
+        transformAnim.toValue = NSValue(caTransform3D: targetTransform)
+        transformAnim.duration = duration
+        transformAnim.timingFunction = Self.revealTimingFunction
+
+        layer.add(opacityAnim, forKey: "indicator.opacity")
+        layer.add(transformAnim, forKey: "indicator.transform")
+    }
+
+    // Puts a layer into its resting "hidden" or "shown" state without
+    // animating — used when the pill is (re)built.
+    private func setIndicatorLayer(_ layer: CALayer, shown: Bool) {
+        layer.opacity = shown ? 1 : 0
+        layer.transform = shown
+            ? CATransform3DIdentity
+            : Self.centeredScale(Self.indicatorSwapScale, in: layer.bounds)
     }
 
     private func saveOriginalStateIfNeeded() {
@@ -377,6 +650,8 @@ public final class MenuBarLiveActivity {
         pillContainer = nil
         progressLayer = nil
         trackLayer = nil
+        ringLayer = nil
+        symbolView = nil
         titleLabel = nil
         widthConstraint = nil
         glassView = nil
@@ -444,10 +719,7 @@ public final class MenuBarLiveActivity {
         container.layer?.masksToBounds = true
         // Liquid Glass background instead of a flat tint fill, if enabled.
         if useGlassBackground, #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: container.bounds)
-            glass.autoresizingMask = [.width, .height]
-            glass.cornerRadius = pillHeight / 2
-            glass.tintColor = currentTintColor
+            let glass = makeGlassView(frame: container.bounds)
             container.addSubview(glass)
             glassView = glass
         } else {
@@ -479,6 +751,14 @@ public final class MenuBarLiveActivity {
         // around the indicator's middle during the indeterminate animation.
         let layerBounds = CGRect(x: 0, y: 0, width: indicatorDiameter, height: indicatorDiameter)
 
+        // The ring lives in its own layer so it can be swapped for the
+        // symbol as a single unit.
+        let ring = CALayer()
+        ring.bounds = layerBounds
+        ring.position = center
+        ring.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        indicatorView.layer?.addSublayer(ring)
+
         let track = CAShapeLayer()
         track.path = path
         track.strokeColor = style.textColor.withAlphaComponent(0.28).cgColor
@@ -487,7 +767,7 @@ public final class MenuBarLiveActivity {
         track.bounds = layerBounds
         track.position = center
         track.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        indicatorView.layer?.addSublayer(track)
+        ring.addSublayer(track)
 
         let progress = CAShapeLayer()
         progress.path = path
@@ -500,7 +780,29 @@ public final class MenuBarLiveActivity {
         progress.bounds = layerBounds
         progress.position = center
         progress.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        indicatorView.layer?.addSublayer(progress)
+        ring.addSublayer(progress)
+
+        // Symbol slot on top of the ring, same size, centred glyph.
+        let symbol = NSImageView(frame: indicatorView.bounds)
+        symbol.wantsLayer = true
+        // Glyphs are sized to the slot by the symbol configuration; wider
+        // symbols (e.g. triangles) are shrunk so they never overflow it.
+        symbol.imageScaling = .scaleProportionallyDown
+        symbol.imageAlignment = .alignCenter
+        symbol.isEditable = false
+        symbol.autoresizingMask = [.width, .height]
+        symbol.contentTintColor = tintColor(for: symbolRendering)
+        if let symbolImage {
+            symbol.image = configuredSymbolImage(symbolImage, rendering: symbolRendering)
+        }
+        indicatorView.addSubview(symbol)
+
+        // Resting state: exactly one of ring / symbol is visible.
+        let showsSymbol = symbolImage != nil
+        setIndicatorLayer(ring, shown: !showsSymbol)
+        if let symbolLayer = symbol.layer {
+            setIndicatorLayer(symbolLayer, shown: showsSymbol)
+        }
 
         label.frame = NSRect(
             x: indicatorFrame.maxX + spacing,
@@ -523,6 +825,8 @@ public final class MenuBarLiveActivity {
         pillContainer = container
         progressLayer = progress
         trackLayer = track
+        ringLayer = ring
+        symbolView = symbol
         titleLabel = label
 
         // Expose the activity to VoiceOver while the icon is gone.
@@ -598,6 +902,10 @@ public final class MenuBarLiveActivity {
     // Initial / collapsed scale for the show & hide transitions. Subtle
     // enough to feel like a gentle settle rather than an aggressive pop.
     private static let pillStartScale: CGFloat = 0.88
+    // Collapsed scale for the ring ↔ symbol swap. A little smaller than the
+    // pill's own start scale so the glyph visibly settles into the slot
+    // without an aggressive pop.
+    private static let indicatorSwapScale: CGFloat = 0.75
     // The macOS 26+ menu bar animates a status item resize over roughly
     // 0.4s. The reveal starts earlier than that on purpose: the pill
     // begins small (``pillStartScale``) and transparent, so the tail end
